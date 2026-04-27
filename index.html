@@ -1247,12 +1247,12 @@ body::before {
 <script>
 // ── Données ──────────────────────────────────────────────────
 let instruments = JSON.parse(localStorage.getItem('encyclo_v3') || '[]');
-let mediaFiles = {}; // id → { photoUrl, photoName, audioUrl, audioName }
+let mediaFiles = JSON.parse(localStorage.getItem('encyclo_v3_media') || '{}'); // id → { photoUrl, photoName, audioUrl, audioName }
 let editId = null;
 let currentDetailId = null;
 let currentAudio = null;
-let pendingPhoto = null;
-let pendingAudio = null;
+let pendingPhoto = null; // { base64, name }
+let pendingAudio = null; // { base64, name }
 let viewMode = 'grid';
 let currentNavPage = 'all';
 
@@ -1272,6 +1272,32 @@ if (instruments.length === 0) {
 
 function saveLocal() {
   localStorage.setItem('encyclo_v3', JSON.stringify(instruments));
+  localStorage.setItem('encyclo_v3_media', JSON.stringify(mediaFiles));
+}
+
+// Convertit un File en base64 de façon asynchrone
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result); // data:mime;base64,xxx
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// Indicateur de sauvegarde
+function showSaveIndicator() {
+  let el = document.getElementById('save-indicator');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'save-indicator';
+    el.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#fff;color:#0a0a0a;padding:10px 18px;border-radius:8px;font-size:13px;font-family:Outfit,sans-serif;font-weight:500;z-index:9000;opacity:0;transition:opacity 0.3s;pointer-events:none;';
+    document.body.appendChild(el);
+  }
+  el.textContent = '✓ Sauvegardé';
+  el.style.opacity = '1';
+  clearTimeout(el._timeout);
+  el._timeout = setTimeout(() => { el.style.opacity = '0'; }, 1800);
 }
 
 function escH(s) {
@@ -1663,21 +1689,26 @@ function resetPhotoPreview() {
   document.getElementById('f-photo').value = '';
 }
 
-function handlePhoto(input) {
+async function handlePhoto(input) {
   const file = input.files[0];
   if (!file) return;
-  const url = URL.createObjectURL(file);
-  pendingPhoto = { url, name: file.name };
-  document.getElementById('photo-preview').src = url;
-  document.getElementById('photo-preview').style.display = 'block';
-  document.getElementById('photo-placeholder').style.display = 'none';
+  try {
+    const base64 = await fileToBase64(file);
+    pendingPhoto = { base64, name: file.name };
+    document.getElementById('photo-preview').src = base64;
+    document.getElementById('photo-preview').style.display = 'block';
+    document.getElementById('photo-placeholder').style.display = 'none';
+  } catch(e) { alert('Erreur lors du chargement de la photo.'); }
 }
 
-function handleAudio(input) {
+async function handleAudio(input) {
   const file = input.files[0];
   if (!file) return;
-  pendingAudio = { url: URL.createObjectURL(file), name: file.name };
-  document.getElementById('audio-label').textContent = '🎵 ' + file.name;
+  try {
+    const base64 = await fileToBase64(file);
+    pendingAudio = { base64, name: file.name };
+    document.getElementById('audio-label').textContent = '🎵 ' + file.name;
+  } catch(e) { alert('Erreur lors du chargement du fichier audio.'); }
 }
 
 function saveInstrument() {
@@ -1698,21 +1729,36 @@ function saveInstrument() {
     const idx = instruments.findIndex(i => i.id === editId);
     instruments[idx] = { ...instruments[idx], ...obj };
     if (!mediaFiles[editId]) mediaFiles[editId] = {};
-    if (pendingPhoto) { mediaFiles[editId].photoUrl = pendingPhoto.url; mediaFiles[editId].photoName = pendingPhoto.name; }
-    if (pendingAudio) { mediaFiles[editId].audioUrl = pendingAudio.url; mediaFiles[editId].audioName = pendingAudio.name; }
+    if (pendingPhoto) {
+      mediaFiles[editId].photoUrl = pendingPhoto.base64;
+      mediaFiles[editId].photoName = pendingPhoto.name;
+    }
+    if (pendingAudio) {
+      mediaFiles[editId].audioUrl = pendingAudio.base64;
+      mediaFiles[editId].audioName = pendingAudio.name;
+    }
   } else {
     const id = Date.now();
     instruments.push({ id, ...obj });
     if (pendingPhoto || pendingAudio) {
       mediaFiles[id] = {};
-      if (pendingPhoto) { mediaFiles[id].photoUrl = pendingPhoto.url; mediaFiles[id].photoName = pendingPhoto.name; }
-      if (pendingAudio) { mediaFiles[id].audioUrl = pendingAudio.url; mediaFiles[id].audioName = pendingAudio.name; }
+      if (pendingPhoto) { mediaFiles[id].photoUrl = pendingPhoto.base64; mediaFiles[id].photoName = pendingPhoto.name; }
+      if (pendingAudio) { mediaFiles[id].audioUrl = pendingAudio.base64; mediaFiles[id].audioName = pendingAudio.name; }
     }
   }
 
   pendingPhoto = null;
   pendingAudio = null;
-  saveLocal();
+
+  try {
+    saveLocal();
+    showSaveIndicator();
+  } catch(e) {
+    // localStorage plein (trop de photos/audio lourds)
+    alert('⚠️ Espace de stockage insuffisant. Essayez des images plus légères (< 1 Mo) ou supprimez des instruments existants.');
+    // On garde quand même en mémoire pour la session
+  }
+
   closeModal();
   renderAll();
 }
@@ -1737,15 +1783,13 @@ function setupDrop(zoneId, type) {
     const file = e.dataTransfer.files[0];
     if (!file) return;
     if (type === 'photo' && file.type.startsWith('image/')) {
+      const dt = new DataTransfer(); dt.items.add(file);
       const inp = document.getElementById('f-photo');
-      const dt = new DataTransfer();
-      dt.items.add(file);
       inp.files = dt.files;
       handlePhoto(inp);
     } else if (type === 'audio' && file.type.startsWith('audio/')) {
+      const dt = new DataTransfer(); dt.items.add(file);
       const inp = document.getElementById('f-audio');
-      const dt = new DataTransfer();
-      dt.items.add(file);
       inp.files = dt.files;
       handleAudio(inp);
     }
